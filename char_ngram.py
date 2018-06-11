@@ -2,7 +2,7 @@
 """
 Created on Wed Dec 20 14:26:02 2017
 
-@author: mh
+@author: atr
 """
 
 import nltk, re, glob
