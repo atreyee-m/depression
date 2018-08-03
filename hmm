@@ -1,0 +1,411 @@
+import sys,os,csv
+import json
+from collections import defaultdict
+from collections import Counter
+import collections
+import pprint as pp
+import pandas as pd
+
+from nltk import word_tokenize, pos_tag, ne_chunk
+from nltk.chunk import conlltags2tree, tree2conlltags
+from nltk.tag.stanford import StanfordNERTagger
+from nltk.tag import StanfordNERTagger
+
+def warn(*args, **kwargs):
+    pass
+import warnings
+warnings.warn = warn
+
+def get_input(input_path,output_path):
+    
+    icdineachfile = {}
+    
+    final_d ={}
+    for file in os.listdir(input_path):
+        print(".....................................")
+        print("Processing ",file,"....................................................")
+        print(".....................................")
+        diseasemention = []
+        with open(input_path+"/"+file) as f:
+            print(file)
+            data = json.load(f)
+            sentence = data["_referenced_fss"]["1"]['sofaString']
+            #print(sentence)
+            original_fn = file.split('.')[0].split('_')[1] 
+            x = get_text_actual_preferred(data,sentence)[0]
+            #print(x)
+            #df = pd.DataFrame()
+            for i,j in x.items():
+                diseasemention.append(j)
+                #print(j)
+                #df = pd.DataFrame.from_dict(j,index = [0])
+            if original_fn not in icdineachfile:
+                icdineachfile[original_fn] = diseasemention
+            else:
+                icdineachfile[original_fn].append(diseasemention)
+
+    final_dict = {}
+    for i,j in icdineachfile.items():
+        final_dict[i] = flatten(j)
+            
+            
+        #pp.pprint(j)
+    
+    for i,j in final_dict.items():
+        with open(output_path+"/"+i+".csv",'w') as csvfile:
+            csvwriter = csv.DictWriter(csvfile, delimiter="|",fieldnames = ['EXTRACT FROM TEXT','ACTUAL DISEASE MENTION','NLP ENGINE INFERRED','ICD GIVEN BY NLP ENGINE'])  
+            csvwriter.writeheader()
+            for things in j:
+                csvwriter.writerow(things)
+    
+#     with open('icdineachfile.json', 'w') as fp:
+#         json.dump(final_dict, fp)
+    
+    
+    
+    return icdineachfile
+
+def flatten(xs):
+    result = []
+    if isinstance(xs, (list, tuple)):
+        for x in xs:
+            result.extend(flatten(x))
+    else:
+        result.append(xs)
+    return result
+
+
+
+#not using this one but same logic as the other one
+def generatory_flatten(l):
+    for el in l:
+        if isinstance(el, collections.Iterable) and not isinstance(el, (str, bytes)):
+            yield from flatten(el)
+        else:
+            yield el
+
+def extract_part_filename(filename):
+    return filename.split('.')[0].split('_')[1]
+        
+
+def get_text_actual_preferred(data,sentence):
+    icdmentions = {}
+    #print(sentence)
+    
+    for i in data["_referenced_fss"].keys():
+        #print(data["_referenced_fss"][i])
+        #print(data["_referenced_fss"][i].values()["code"])
+        if('ICD10CM' in data["_referenced_fss"][i].values()):
+            #print(data["_referenced_fss"][i]['code'])
+            icdmentions[int(i)] = (data["_referenced_fss"][i]['preferredText'],data["_referenced_fss"][i]['code'])
+                        #print(data["_referenced_fss"].get(i))
+        ssm_ontoconcptarr = {}
+    
+    try:
+        for i in data["_views"]["_InitialView"]["SignSymptomMention"]:
+            #print(i['ontologyConceptArr'])
+            ontoconarr = i['ontologyConceptArr']
+            for each in ontoconarr:
+                ssm_ontoconcptarr[each] = (i['begin'],i['end'])
+    
+    except KeyError as exc:
+        #print(traceback.format_exc())
+        print(exc,"is not found in file")
+        
+    try:
+        for i in data["_views"]["_InitialView"]["DiseaseDisorderMention"]:
+            #print(i['ontologyConceptArr'])
+            ontoconarr = i['ontologyConceptArr']
+            for each in ontoconarr:
+                ssm_ontoconcptarr[each] = (i['begin'],i['end'])
+#     if not data["_views"]["_InitialView"]["DiseaseDisorderMention"]:
+#         print(data["_views"]["_InitialView"]["SignSymptomMention"])
+#         raise ValueError("There is no Disease Disorder Mention in this file.")
+    except KeyError as exc:
+        #print(traceback.format_exc())
+        print(exc,"is not found in file.")
+        
+    try:
+        for i in data["_views"]["_InitialView"]["MedicationMention"]:
+            #print(i['ontologyConceptArr'])
+            ontoconarr = i['ontologyConceptArr']
+            for each in ontoconarr:
+                ssm_ontoconcptarr[each] = (i['begin'],i['end'])
+    
+    except KeyError as exc:
+        #print(traceback.format_exc())
+        print(exc,"is not found in file.")
+        #pass
+
+    
+    try:
+        for i in data["_views"]["_InitialView"]["ProcedureMention"]:
+            #print(i['ontologyConceptArr'])
+            ontoconarr = i['ontologyConceptArr']
+            for each in ontoconarr:
+                ssm_ontoconcptarr[each] = (i['begin'],i['end'])
+    
+    except KeyError as exc:
+        #print(traceback.format_exc())
+        print(exc,"is not found in file.")
+    
+    try:
+        for i in data["_views"]["_InitialView"]["EntityMention"]:
+            #print(i['ontologyConceptArr'])
+            ontoconarr = i['ontologyConceptArr']
+            for each in ontoconarr:
+                ssm_ontoconcptarr[each] = (i['begin'],i['end'])
+    
+    except KeyError as exc:
+        #print(traceback.format_exc())
+        print(exc,"is not found in file.")
+    
+    #AnatomicalSiteMention
+    try:
+        for i in data["_views"]["_InitialView"]["AnatomicalSiteMention"]:
+            #print(i['ontologyConceptArr'])
+            ontoconarr = i['ontologyConceptArr']
+            for each in ontoconarr:
+                ssm_ontoconcptarr[each] = (i['begin'],i['end'])
+    
+    except KeyError as exc:
+        #print(traceback.format_exc())
+        print(exc,"is not found in file.")
+    
+    
+    actual_text_dict = {}
+
+    for i,j in ssm_ontoconcptarr.items():
+        wordbegintoken = j[0]
+        wordendtoken = j[1]
+        actual_text_dict[i] = (sentence[j[0]:j[1]],get_actual_sentence(data,sentence,wordbegintoken,wordendtoken))
+        
+        #print(get_actual_sentence(data,sentence,wordbegintoken,wordendtoken))
+        
+        #print(i,j,get_actual_sentence(data,sentence,wordbegintoken,wordendtoken))
+    
+    final_list = []
+
+    
+#     for key,value in icdmentions.items():
+#         final_list.append({'actual text in input':actual_text_dict[key],'NLP Inferred':icdmentions[key]})
+
+    finaldict = {key:{'EXTRACT FROM TEXT':actual_text_dict[key][1],'ACTUAL DISEASE MENTION':actual_text_dict[key][0],'NLP ENGINE INFERRED': icdmentions[key][0],'ICD GIVEN BY NLP ENGINE':icdmentions[key][1]} for key in icdmentions}
+
+    #pp.pprint(final_list)    
+    return finaldict,final_list
+
+
+def return_uniq_filenames(input_path):
+    justfilename = []
+    for file in os.listdir(input_path):
+        filename = os.fsdecode(file)
+        #print(filename)
+        fnonly =  filename.split('.')[0].split('_')[1]
+        #print(fnonly)
+        justfilename.append(fnonly)
+        #print(justfilename)
+        
+    return list(set(justfilename))
+
+
+
+def get_actual_sentence(data,sentence,wordbegintoken,wordendtoken):
+    
+    actual_line,actual_start_tokens_sent,actual_end_tokens_sent = find_actual_line_number(data,sentence,wordbegintoken,wordendtoken)
+    c = 0
+    strng =  data["_referenced_fss"]["1"]["sofaString"]
+    print(actual_start_tokens_sent,actual_end_tokens_sent)
+    print(strng[actual_start_tokens_sent:actual_end_tokens_sent])
+    
+    return strng[actual_start_tokens_sent:actual_end_tokens_sent]
+
+def find_actual_line_number(data,sentence,wordbegintoken,wordendtoken):
+    
+    actual_line = 0
+    actual_start_tokens_sent = 0
+    actual_end_tokens_sent=0
+    #print(wordbegintoken,wordendtoken)
+    for x in data['_views']['_InitialView']['Sentence']:
+        if wordbegintoken >= x["begin"] and wordendtoken <= x["end"]:
+            #print(x['sentenceNumber'])
+            actual_line = x['sentenceNumber']
+            actual_start_tokens_sent = x["begin"]
+            actual_end_tokens_sent = x["end"]
+    
+    return actual_line,actual_start_tokens_sent,actual_end_tokens_sent
+
+def all_to_one_csv(parentdir):
+    
+    print(parentdir)
+    try:
+        os.remove(parentdir+"/"+"hmig_nurses_cases.csv")
+    except OSError:
+        pass
+    
+    writefile = open(parentdir+"/"+"hmig_nurses_cases.csv","a")
+
+        
+    writefile.write("sep=|")
+    writefile.write("\n")
+    writefile.write("CASE|FILENAME|EXTRACT FROM TEXT|ACTUAL DISEASE MENTION|NLP ENGINE INFERRED|ICD GIVEN BY NLP ENGINE")
+    writefile.write("\n")
+    for dirpath, dirnames, files in os.walk(parentdir):
+        print("directory name",dirpath)
+        dirname = dirpath.split(os.path.sep)[-1]
+        for eachfile in files:
+            print(dirpath+"/"+eachfile)
+            with open(dirpath+"/"+eachfile,'r') as f:
+                first_line = f.readline()
+                for line in f:
+                    casename = dirname.split("_")[1]
+                    to_write = casename+"|"+eachfile+"|"+line
+                    writefile.write(to_write)
+    writefile.close()
+                
+            
+    return
+
+
+def case_wise_csv(parentdir):
+    
+    #print(parentdir)
+#     try:
+#         os.remove(parentdir+"/"+"hmig_nurses_cases.csv")
+#     except OSError:
+#         pass
+    
+    #writefile = open(parentdir+"/"+"hmig_nurses_cases.csv","a")
+
+        
+    #writefile.write("sep=|")
+    #writefile.write("\n")
+    #writefile.write("CASE|FILENAME|EXTRACT FROM TEXT|ACTUAL DISEASE MENTION|NLP ENGINE INFERRED|ICD GIVEN BY NLP ENGINE")
+    #writefile.write("\n")
+    for dirpath, dirnames, files in os.walk(parentdir):
+        print("directory name",dirpath)
+        dirname = dirpath.split(os.path.sep)[-1]
+        #print(dirname,"......................")
+        
+        if dirname == "json_parsed2csv":
+            continue
+        else:
+            writefile = open(parentdir+"/"+dirname+".csv","w")
+            writefile.write("sep=|")
+            writefile.write("\n")
+            writefile.write("CASE|FILENAME|EXTRACT FROM TEXT|ACTUAL DISEASE MENTION|NLP ENGINE INFERRED|ICD GIVEN BY NLP ENGINE")
+            writefile.write("\n")
+            print(dirname,"......................")
+            for eachfile in files:
+                print(dirpath+"/"+eachfile)
+                with open(dirpath+"/"+eachfile,'r') as f:
+                    first_line = f.readline()
+                    for line in f:
+                        casename = dirname.split("_")[1]
+                        to_write = casename+"|"+eachfile+"|"+line
+                        writefile.write(to_write)
+            writefile.close()
+#writefile.close()
+                
+            
+    return
+
+def ner_on_sentences(ner_input):
+    
+    df = convert2df(ner_input)
+    #print()
+    print(df.head())
+    basnameoutputfile = os.path.basename(ner_input).split(".")[0]
+    df['POSSIBLE NAMES IN TEXT'] = df['EXTRACT FROM TEXT'].apply(ner_function)
+    df.to_csv("/n01/data/adp/lid1rmq/HMIG_data/json_parsed2csv/"+basnameoutputfile+"_withpatientnames.csv",sep = "|")
+    
+#     extracted_text = df['EXTRACT FROM TEXT'].tolist()
+#     ner_function(extracted_text)
+    #print(df.head())
+    return
+
+def ner_function(text):
+    #this was garbage
+#     print("inside ner")
+    #print(text)
+#     print(tree2conlltags(ne_chunk(pos_tag(word_tokenize(text.lower())))))
+    kw = []
+    print(text)
+    st = StanfordNERTagger('/n01/data/adp/lid1rmq/stanford-ner-2018-02-27/classifiers/english.all.3class.distsim.crf.ser.gz','/n01/data/adp/lid1rmq/stanford-ner-2018-02-27/stanford-ner.jar',encoding='utf-8')
+    for i in st.tag(text.split()):
+        
+        if(i[1] == 'PERSON'):
+            kw.append(i[0])
+        else:
+            continue
+        
+    return kw
+    
+    
+#     kww = []
+#     for eachline in text:
+#         kw = []
+#         for i in st.tag(eachline.split()):
+#             if(i[1] == 'PERSON'):
+#                 kw.append(i[0])
+#             else:
+#                 continue
+#         kww.append(kw)
+#     print(kww)      
+    #return kw
+    
+    
+    
+
+def convert2df(file):
+    
+    infile = open(file,'r',encoding='utf-8',errors='ignore') 
+    
+    df = pd.read_csv(infile,delimiter = "|",skiprows=[0],skip_blank_lines=False,error_bad_lines=False,warn_bad_lines=False).fillna("")
+
+    #print(df)
+    
+    
+    return df
+
+def main():
+    
+    if(len(sys.argv) < 3 or len(sys.argv) > 3):
+        print(            """
+        Error: Invalid number of arguments.
+        Usage: <script> <absolute path of directory containing the input file(s)> <output file path - path where the manifest file will be written>
+        """)
+        sys.exit(0)
+    else:
+        #input_path=sys.argv[1]
+        #output_path=sys.argv[2]
+        #ner_input = sys.argv[3]
+        #input_path = "/n01/data/adp/lid1rmq/ctakes_1/output/new_outputs/json_output/splitfiles_FBCChemicalCorporation_output/"
+        #ner_input = sys.argv[1]
+        ner_input = sys.argv[1]#"/n01/data/adp/lid1rmq/HMIG_data/json_parsed2csv/splitfiles_FBCChemicalCorporation_output.csv"
+        input_path = "/n01/data/adp/lid1rmq/ctakes_1/output/new_outputs/json_output/splitfiles_GeneralInsulationCo_output/"
+        userin_output_path = "/n01/data/adp/lid1rmq/HMIG_data/json_parsed2csv/"
+        output_path = userin_output_path+os.path.basename(os.path.normpath(input_path))
+        
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+        #get_input(input_path,output_path)  #this calls the function to parse json, create a directory and store the csvs
+        #once this finishes then use this function which reads all the files created by the get_input function and accumulates to one single file --->
+        parentdir = os.path.abspath(os.path.join(output_path, os.pardir)) 
+        #all_to_one_csv(parentdir) #copies all into 1 
+        #case_wise_csv(parentdir) #does case wise aggregation
+        #named entity recognizer function -->
+        #ner_input = "/n01/data/adp/lid1rmq/HMIG_data/json_parsed2csv/hmig_nurses_cases.csv"
+        ner_on_sentences(ner_input)
+        
+        
+        
+        
+        
+    
+    
+
+    return
+
+if __name__ == "__main__":
+    main() 
