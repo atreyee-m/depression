@@ -1,0 +1,290 @@
+
+# coding: utf-8
+
+##########################################################################################################################################
+"""
+
+Purpose: Extracting sentences containing social determinants information from careplan dataset.
+# Author: Atreyee Mukherjee
+#
+# Description: This is the serial code. The code takes the careplan table dump as an input and the location of the output directory. It takes the ICD code table dump and then converts it into tfidf vectors from 1 to 5-grams. It reads the input table dump into a dataframe, merges three columns (diagnoses & interventions) and considers it as one field. This column is then lemmatized and converted to tfidf vectors, similar to the ICD data. Then it computes the similarity score between each record in the careplan table and individual broad category of ICDs(Z55-Z65). 
+
+# Output description: Outputs files containing score based on each ICD for all the sentences. Also outputs ECI, careplan date and other information from the original table dump.
+
+# Postprocessing (required for keywords extraction but optional otherwise): 
+# - If its needed, the consolidation script is written after the main function in comments. It is a bash script.
+# - Remove all the records for each Zcode where the score is 0. This step is done using a bash script, remove0scores.sh. This shell script needs to be run at the file location.
+
+# wrapper script description is in the index page.
+
+"""
+
+##########################################################################################################################################
+
+
+
+import sys
+import nltk
+import collections
+from collections import Counter
+import os, string, glob
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import *
+import pprint as pp
+import operator
+from collections import OrderedDict
+import csv
+import pandas as pd
+from collections import Counter
+import numpy as np
+import gensim
+from gensim.summarization import summarize
+from gensim.summarization import keywords
+import rake_nltk
+from rake_nltk import Rake
+import networkx
+import nltk
+from nltk.tokenize import casual_tokenize
+from nltk.tokenize.casual import _replace_html_entities
+from nltk.stem import WordNetLemmatizer
+from nltk import word_tokenize, pos_tag
+from nltk.stem.lancaster import *
+from nltk.stem.porter import *
+from nltk.stem.porter import PorterStemmer
+from tabulate import tabulate
+from nltk.tokenize import RegexpTokenizer
+from nltk import word_tokenize, pos_tag
+from csv import StringIO
+import matplotlib.pyplot as plt
+import json
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import linear_kernel
+import scipy
+import math
+import json
+import itertools
+import fnmatch
+import subprocess
+import multiprocessing as mp
+#sys.stdout = open(os.devnull, "w")
+
+#print(mp.cpu_count())
+#nltk.download('stopwords')
+    
+
+
+# To insert a line from a file to the start of another one:  
+# `sed -i "1i $(head -n 1 CarePlanData_wECI.csv)" CarePlanData_wECI_test.csv`
+
+# In[4]:
+
+zcode = "".join(sys.argv[1])
+analyzer = "".join(sys.argv[2])
+print(zcode,analyzer,"-----------------------------------------------------------------------------------------------")
+
+#input & output
+input_dir = "/n01/data/adp/lid1rmq/NLP_SDOH/"
+#input_fn = "/n01/data/adp/lid1rmq/data_directory/CarePlanData_wECI_train.csv"#"/n01/data/adp/lid1rmq/data_directory/allcols_careplan_train.csv"#"/n01/data/adp/lid1rmq/NLP_SDOH/CarePlanExamples.csv"
+icd10_fn = ""
+
+#output_dir = "/n01/data/adp/lid1rmq/data_directory/careplan_wECI/parallel_out/"
+
+similarity_fn = "all_train_careplan_similarity.csv"
+
+lancaster_stemmer = LancasterStemmer()
+
+lemmatizer = WordNetLemmatizer()
+
+
+# In[5]:
+
+
+def readFile(input_fn):
+    """
+    input:
+    desc: general file reading (read_csv)
+    returns: dataframe
+    """
+    
+    infile = open(input_fn,'r',encoding='utf-8',errors='ignore') 
+    df = pd.read_csv(infile,skip_blank_lines=False,error_bad_lines=False,warn_bad_lines=False).fillna("")
+    
+    return df
+
+
+# In[6]:
+
+
+def readFile_for_careplandata(input_fn):
+    """
+    this is specifically for the careplan one, concatenates 3 columns into one
+    """
+    pd.options.display.max_colwidth = 1000
+    df = readFile(input_fn)
+    df["text"] = df["CAR_PLN_PRB_DS"]+", "+df["CPG_DS"]+", "+df["CAR_PLN_INTRVN_DS"]
+    df = df.drop(columns = ["CAR_PLN_PRB_DS","CPG_DS","CAR_PLN_INTRVN_DS"])
+    #df.columns[1] = "sentence_id"
+    #df['sentence_id'] = df.index
+    df.insert(loc=1, column='sentence_id', value=df.index+1)
+    #print(df)
+    return df
+
+
+# In[7]:
+
+
+#readFile_for_careplandata(input_fn).head()
+
+
+# In[8]:
+
+
+def Z55_65_icd():
+    """ derived only based on Z55 to Z65"""
+    pd.options.display.max_colwidth = 1000
+    
+    #this part is for deriving each code separately for example Z55.1, ..
+    df_icd = readFile("/n01/data/adp/lid1rmq/data_directory/ICD10.csv")
+    df_icd['icd_slicedcodes'] = df_icd.EADIAG_ICD10_CD.str[:3]
+    df_icd_zcodes = df_icd[df_icd['icd_slicedcodes'].str.match('Z')]
+    df_icd_sdoh = df_icd_zcodes.loc[df_icd_zcodes['icd_slicedcodes'].astype(str).str[1:3].between('55','65')]
+    df_icd_sdoh = df_icd_sdoh.filter(['EADIAG_ICD10_CD','EA_DS'],axis=1)
+
+    #this groups the Z55-65 codes together
+    df_icd_sdoh['Zcodes'] = df_icd_sdoh.EADIAG_ICD10_CD.str[:3]
+    new_df = df_icd_sdoh[['Zcodes','EA_DS']]
+    df2 = new_df.groupby('Zcodes')['EA_DS'].apply(list).reset_index()
+    
+    return df2
+
+
+# In[9]:
+
+
+#Z55_65_icd()
+
+
+# In[10]:
+
+
+def lemmatize_text(text):
+    """
+    input: text as list of strings
+    desc: lemmatizes text
+    returns: list(?)
+    """
+    #print(text)
+    #text = ' '.join(text)
+    tokenizer = RegexpTokenizer(r'\w+')
+    text=tokenizer.tokenize(text)
+    text=" ".join(text)
+    text=text.lower()
+    
+    return [lemmatizer.lemmatize(w) for w in tokenizer.tokenize(text)]
+
+
+# In[11]:
+
+
+def tfIDF(text,analyzer):
+    """
+    input: a column of a dataframe containing the actual text
+    desc:
+    returns:
+    """
+    
+    
+    vect = TfidfVectorizer(stop_words='english',analyzer=analyzer,ngram_range=(1,5))
+    tfidf_dict = {}
+
+    tfidf=vect.fit_transform(text)
+
+    d = dict(zip(vect.get_feature_names(), tfidf.data))
+
+    sorted_dict = sorted(d.items(), key=operator.itemgetter(1),reverse=True)
+        
+    return vect,tfidf,vect.get_feature_names(),sorted_dict
+
+
+# In[ ]:
+
+
+def evaluate_against_each_z_code(df_dataset,analyzer,input_fn,output_dir):
+    """
+    Input: 
+        - the dataframe containing just sdoh ICD codes, this function - Z55_65_icd()
+        - df_dataset, which calls input_for_sdoh(), which is basically the scores+sentences from the original dataset. 
+          This could be any input, modifying it to be so it can now take keywords too
+    Returns:
+        - returns/writes to file similarity between each sdoh and a sentence
+    
+    """
+
+    df = Z55_65_icd()
+
+    df['Lemmatized_EA_DS'] = df.EA_DS.apply(lambda x: ' '.join(x)).apply(lemmatize_text)
+    lol_sdoh = df.Lemmatized_EA_DS.values.tolist()
+    
+    
+    
+    df_dict = df.set_index('Zcodes')['Lemmatized_EA_DS'].to_dict()
+    #print(df_dict)
+    eachsdoh = df_dict.get(zcode)
+    
+    vect,tfidf,featnames,sorted_dict = tfIDF(eachsdoh,analyzer)
+    #print(featnames)
+    type_of_input="whole_sentences"
+    
+    f=open(output_dir+type_of_input+"_"+zcode+"_"+analyzer+".txt",'w')
+    for row in df_dataset.itertuples():
+        #crpln_id = row.CPLN_RCD_ID #didnt find this in the eci dataset
+        crpln_dt = row.CAR_PLN_PRB_VND_RCD_CRE_DT
+        crpln_eci = row.ENTR_CNSM_ID
+        crpln_pgm_enrm_id = row.PGM_ENRM_ID
+        sent_id = row.sentence_id
+        sentence = row.text
+        sentence = " ".join(lemmatize_text(sentence))
+        sentence = sentence.split()
+        tfidf_sentence = vect.transform(sentence) #listofvectorizerobj[1].transform(sentence)
+        #print(sum(sum((linear_kernel(tfidf,tfidf_sentence))))," | "," ".join(sentence))
+        #to_write=str(sum(sum((linear_kernel(tfidf,tfidf_sentence)))))+" | "+" ".join(sentence)+" | "+str(crpln_dt)+" | "+str(crpln_eci)+" | "+str(crpln_pgm_enrm_id)#+" | "+str(crpln_id)
+        to_write=str(sum(sum((linear_kernel(tfidf,tfidf_sentence)))))+" | "+str(sent_id)+" | "+str(crpln_dt)+" | "+str(crpln_eci)+" | "+str(crpln_pgm_enrm_id)#+" | "+str(crpln_id)
+        f.write(to_write)
+        f.write("\n")
+            
+    f.close()
+    
+    return
+
+
+# In[ ]:
+
+
+#evaluate_against_each_z_code(readFile_for_careplandata(input_fn),analyzer);
+
+def main():
+    
+    if(len(sys.argv) < 5 or len(sys.argv) > 5):
+        print(            """
+        Error: Invalid number of arguments.
+        Usage: <script> <input file name with absolute path> <absolute path to output directory name where the files will be written>
+        """)
+        sys.exit(0)
+    else:
+        input_fn = sys.argv[3]
+        output_dir = sys.argv[4]
+        
+        evaluate_against_each_z_code(readFile_for_careplandata(input_fn),analyzer,input_fn,output_dir);
+        
+
+
+        
+
+
+    return
+
+if __name__ == "__main__":
+    main() 
+
+
